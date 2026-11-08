@@ -1,69 +1,120 @@
-import Image from "next/image";
+import { Suspense } from "react";
+import Link from "next/link";
+import { connection } from "next/server";
+import { getDb } from "@/lib/db";
+import { defaultNetwork } from "@/lib/network-data";
+import { computeDpf } from "@/lib/powerflow";
+import type { NetworkModel, TestLogEntry } from "@/lib/types";
+import { Card, Stat } from "@/components/ui";
 
-export default function Home() {
+async function DashboardStats() {
+  await connection();
+  if (!process.env.MONGODB_URI) {
+    return (
+      <Card title="Database not connected">
+        <p className="text-sm text-slate-400">
+          Set <code className="text-slate-200">MONGODB_URI</code> (see <code className="text-slate-200">.env.local.example</code>)
+          to connect MongoDB and see live network status, voltage summary, and recent test events here.
+        </p>
+      </Card>
+    );
+  }
+  const db = await getDb();
+  const network = ((await db
+    .collection<NetworkModel>("networks")
+    .findOne({ id: "default" }, { projection: { _id: 0 } })) as NetworkModel | null) ?? defaultNetwork();
+  const dpf = computeDpf(network);
+  const recentTests = await db
+    .collection<TestLogEntry>("testLogs")
+    .find({}, { projection: { _id: 0 } })
+    .sort({ createdAt: -1 })
+    .limit(5)
+    .toArray();
+
+  const openSwitches = network.edges.filter((e) => e.switch.status === "open").length;
+  const capBanksOn = network.nodes.filter((n) => n.capBank?.status === "on").length;
+  const capBanksTotal = network.nodes.filter((n) => n.capBank).length;
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+    <>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <Card>
+          <Stat label="Network" value={network.name} />
+        </Card>
+        <Card>
+          <Stat
+            label="Min / Max Voltage"
+            value={`${dpf.minVpu.toFixed(3)} / ${dpf.maxVpu.toFixed(3)} pu`}
+            tone={dpf.violations.length ? "bad" : "good"}
+          />
+        </Card>
+        <Card>
+          <Stat label="Open Switches" value={String(openSwitches)} />
+        </Card>
+        <Card>
+          <Stat label="Cap Banks On" value={`${capBanksOn} / ${capBanksTotal}`} />
+        </Card>
+      </div>
+
+      <Card title="Recent test events">
+        {recentTests.length === 0 ? (
+          <p className="text-sm text-slate-500">No test events logged yet.</p>
+        ) : (
+          <ul className="text-sm space-y-1">
+            {recentTests.map((t, i) => (
+              <li key={i} className="flex justify-between gap-2">
+                <span className="truncate">{t.title}</span>
+                <span className="text-slate-500 shrink-0">{t.scenarioType}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+        <Link className="text-sky-400 hover:underline text-sm block mt-2" href="/tests">
+          View full test log →
+        </Link>
+      </Card>
+    </>
+  );
+}
+
+function StatsFallback() {
+  return <p className="text-sm text-slate-500">Loading network status…</p>;
+}
+
+export default function DashboardPage() {
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-xl font-semibold mb-1">ADMS Ops Console</h1>
+        <p className="text-sm text-slate-400 max-w-3xl">
+          A working mini Advanced Distribution Management System: a MongoDB-backed feeder model with
+          Distribution Power Flow (DPF), Fault Location, Isolation &amp; Service Restoration (FLISR), and
+          Volt/VAR Control &amp; Optimization (VVC/VVO) — plus a GIS-style import pipeline and a customer
+          test-event log, mirroring the applications an Associate DMS Application Engineer configures,
+          tests, and supports at a utility.
+        </p>
+      </div>
+
+      <Card title="Quick actions">
+        <div className="flex flex-col gap-2 text-sm">
+          <Link className="text-sky-400 hover:underline" href="/network">
+            View one-line diagram &amp; import a GIS extract →
+          </Link>
+          <Link className="text-sky-400 hover:underline" href="/dpf">
+            Run Distribution Power Flow →
+          </Link>
+          <Link className="text-sky-400 hover:underline" href="/flisr">
+            Simulate a fault and watch FLISR restore service →
+          </Link>
+          <Link className="text-sky-400 hover:underline" href="/vvo">
+            Run VVC/VVO to resolve voltage violations →
+          </Link>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
+      </Card>
+
+      <Suspense fallback={<StatsFallback />}>
+        <DashboardStats />
+      </Suspense>
     </div>
   );
 }
